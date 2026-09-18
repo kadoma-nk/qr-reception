@@ -5,96 +5,348 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>QRコード受付</title>
 <script src="https://unpkg.com/html5-qrcode"></script>
+
 <style>
 body{font-family:sans-serif;text-align:center;margin:0;padding:15px;background:#f5f5f5}
-.box{max-width:500px;margin:auto;background:white;padding:20px;border-radius:12px}
+.box{max-width:500px;margin:auto;background:#fff;padding:20px;border-radius:12px}
 #reader{width:100%;margin:15px auto}
-button{font-size:18px;padding:12px 20px;margin:8px;border:0;border-radius:8px;background:#1a73e8;color:white}
-#message{font-size:20px;font-weight:bold;margin-top:15px;padding:15px;border-radius:10px}
-.ok{background:#d9ead3}.already{background:#fff2cc}.error{background:#f4cccc}
+button{font-size:18px;padding:12px 20px;margin:8px;border:0;border-radius:8px;background:#1a73e8;color:#fff}
+#message{font-size:24px;font-weight:bold;margin-top:15px;padding:18px;border-radius:10px;white-space:pre-line}
+.ok{background:#d9ead3}
+.already{background:#fff2cc}
+.error{background:#f4cccc}
+.wait{background:#eeeeee}
 </style>
 </head>
+
 <body>
+
 <div class="box">
+
 <h2>QRコード受付</h2>
+
 <div id="reader"></div>
+
 <button id="startButton" onclick="startScanner()">カメラを起動</button>
+
 <div id="message">カメラを起動してください。</div>
+
 </div>
 
 <script>
+
 let scanner=null;
 let scanning=false;
 let processing=false;
+
 let lastQr="";
-let lastTime=0;
+let lastScanTime=0;
+
+let audioCtx=null;
+
+
+// ==============================
+// カメラ起動
+// ==============================
 
 async function startScanner(){
+
   if(scanning)return;
 
+  // スマホの音声機能を有効化
+  initAudio();
+
   try{
+
     scanner=new Html5Qrcode("reader");
 
     await scanner.start(
       {facingMode:"environment"},
-      {fps:10,qrbox:{width:250,height:250}},
+      {
+        fps:12,
+        qrbox:{width:250,height:250}
+      },
       onScanSuccess,
       ()=>{}
     );
 
     scanning=true;
+
     document.getElementById("startButton").style.display="none";
-    showMessage("QRコードを枠内に合わせてください。","");
+
+    showMessage(
+      "次のQRコードを\n読み取ってください。",
+      ""
+    );
+
   }catch(err){
-    showMessage("カメラを起動できませんでした。","error");
+
+    showMessage(
+      "カメラを起動できませんでした。",
+      "error"
+    );
+
   }
 }
 
+
+// ==============================
+// QRコードを認識
+// ==============================
+
 function onScanSuccess(decodedText){
+
+  // 前の受付処理中なら読まない
   if(processing)return;
 
   const now=Date.now();
 
-  // 同じQRを連続して拾わない
-  if(decodedText===lastQr&&now-lastTime<3000)return;
+  // 同じQRを5秒以内に再び認識しても無視
+  if(
+    decodedText===lastQr &&
+    now-lastScanTime<5000
+  ){
+    return;
+  }
 
   lastQr=decodedText;
-  lastTime=now;
+  lastScanTime=now;
+
   processing=true;
 
-  showMessage("受付処理中…","");
+  showMessage(
+    "受付処理中…",
+    "wait"
+  );
 
+  // Apps Script受付画面へQR内容を送る
   if(window.opener&&!window.opener.closed){
+
     window.opener.postMessage(
-      {type:"qr-scanned",text:decodedText},
+      {
+        type:"qr-scanned",
+        text:decodedText
+      },
       "*"
     );
+
   }else{
-    showMessage("受付スタッフ専用ページから開いてください。","error");
+
+    playError();
+
+    showMessage(
+      "受付スタッフ専用ページから\n開いてください。",
+      "error"
+    );
+
     processing=false;
+
   }
 }
 
-window.addEventListener("message",function(event){
-  if(!event.data||event.data.type!=="reception-result")return;
 
-  const type=event.data.result||"";
-  const message=event.data.message||"";
+// ==============================
+// Apps Scriptから受付結果を受信
+// ==============================
 
-  showMessage(message,type);
+window.addEventListener(
+  "message",
+  function(event){
 
-  // 1.5秒後に次のQR受付へ
+    if(
+      !event.data ||
+      event.data.type!=="reception-result"
+    ){
+      return;
+    }
+
+    const type=event.data.result;
+    const seat=event.data.seat||"";
+    const message=event.data.message||"";
+
+
+    // --------------------------
+    // 受付成功
+    // --------------------------
+
+    if(type==="checked"){
+
+      playSuccess();
+
+      showMessage(
+        "✓ "+seat+"　受付完了\n\n"+
+        "次のQRコードを読み取ってください。",
+        "ok"
+      );
+
+      // 待ち時間なし
+      processing=false;
+
+    }
+
+
+    // --------------------------
+    // すでに受付済
+    // --------------------------
+
+    else if(type==="already"){
+
+      playError();
+
+      showMessage(
+        "！ "+seat+"　すでに受付済\n\n"+
+        "次のQRコードを読み取ってください。",
+        "already"
+      );
+
+      // 待ち時間なし
+      processing=false;
+
+    }
+
+
+    // --------------------------
+    // エラー
+    // --------------------------
+
+    else{
+
+      playError();
+
+      showMessage(
+        "× "+(seat?seat+"　":"")+
+        message+
+        "\n\nもう一度読み取ってください。",
+        "error"
+      );
+
+      // 待ち時間なし
+      processing=false;
+
+    }
+
+  }
+);
+
+
+// ==============================
+// 音声機能
+// ==============================
+
+function initAudio(){
+
+  try{
+
+    if(!audioCtx){
+
+      audioCtx=
+        new(
+          window.AudioContext ||
+          window.webkitAudioContext
+        )();
+
+    }
+
+    if(audioCtx.state==="suspended"){
+      audioCtx.resume();
+    }
+
+  }catch(e){}
+
+}
+
+
+// ==============================
+// ビープ音
+// ==============================
+
+function beep(freq,duration,delay){
+
+  if(!audioCtx)return;
+
   setTimeout(()=>{
-    processing=false;
-    showMessage("次のQRコードを読み取ってください。","");
-  },1500);
-});
+
+    try{
+
+      const osc=audioCtx.createOscillator();
+      const gain=audioCtx.createGain();
+
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      osc.frequency.value=freq;
+      gain.gain.value=0.15;
+
+      osc.start();
+
+      gain.gain.exponentialRampToValueAtTime(
+        0.001,
+        audioCtx.currentTime+duration
+      );
+
+      osc.stop(
+        audioCtx.currentTime+duration
+      );
+
+    }catch(e){}
+
+  },delay);
+
+}
+
+
+// ==============================
+// 成功音「ピッ♪」
+// ==============================
+
+function playSuccess(){
+
+  beep(
+    1000,
+    0.13,
+    0
+  );
+
+}
+
+
+// ==============================
+// エラー音「ブブッ」
+// ==============================
+
+function playError(){
+
+  beep(
+    220,
+    0.12,
+    0
+  );
+
+  beep(
+    180,
+    0.18,
+    150
+  );
+
+}
+
+
+// ==============================
+// メッセージ表示
+// ==============================
 
 function showMessage(text,type){
-  const el=document.getElementById("message");
+
+  const el=
+    document.getElementById("message");
+
   el.className=type||"";
+
   el.textContent=text;
+
 }
+
 </script>
+
 </body>
 </html>
